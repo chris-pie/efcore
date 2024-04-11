@@ -878,7 +878,20 @@ public class ExpressionTreeFuncletizer : ExpressionVisitor
 
                 if (objectState.IsEvaluatable)
                 {
-                    @object = ProcessEvaluatableRoot(@object, ref objectState);
+                    var evaluatedObject = ProcessEvaluatableRoot(@object, ref objectState);
+                    if (_parameterize && evaluatedObject is ParameterExpression {Name: not null} ob )
+                    {
+                        var actualType = _parameterValues.ParameterValues[ob.Name]?.GetType();
+                        method = InstanceMethod(actualType, method);
+                        var newObject = Parameter(actualType ?? ob.Type, ob.Name);
+                        _parameterizedValues[@object!] = newObject;
+                        @object = newObject;
+                    }
+                    else
+                    {
+                        @object = evaluatedObject;
+                    }
+
                 }
 
                 if (objectState.ContainsEvaluatable && _calculatingPath)
@@ -926,7 +939,9 @@ public class ExpressionTreeFuncletizer : ExpressionVisitor
                 throw new UnreachableException();
         }
 
-        return methodCall.Update(@object, ((IReadOnlyList<Expression>?)arguments) ?? methodCall.Arguments);
+        return methodCall.Method == method ?
+            methodCall.Update(@object, ((IReadOnlyList<Expression>?)arguments) ?? methodCall.Arguments) :
+            Call(@object, method, ((IReadOnlyList<Expression>?)arguments) ?? methodCall.Arguments);
     }
 
     /// <summary>
@@ -1963,6 +1978,25 @@ public class ExpressionTreeFuncletizer : ExpressionVisitor
             && (_parameterize
                 // Don't evaluate QueryableMethods if in compiled query
                 || !(expression is MethodCallExpression { Method: var method } && method.DeclaringType == typeof(Queryable)));
+    private static MethodInfo InstanceMethod(Type? instanceType, MethodInfo method)
+    {
+        if (instanceType is null)
+        {
+            return method;
+        }
+        if (method.DeclaringType?.IsInterface ?? false)
+        {
+            var interfaceMap = instanceType.GetInterfaceMap(method.DeclaringType);
+            var targetIndex = Array.IndexOf(interfaceMap.InterfaceMethods, method);
+            if (targetIndex != -1)
+            {
+                return interfaceMap.TargetMethods[targetIndex];
+            }
+        }
+        var types = method.GetParameters().Select(p => p.ParameterType).ToArray();
+        var instanceMethod = instanceType.GetMethod(method.Name, types);
+        return instanceMethod?.GetBaseDefinition() == method.GetBaseDefinition()? instanceMethod : method;
+    }
 
     private enum StateType
     {
